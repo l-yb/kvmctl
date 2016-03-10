@@ -7,3 +7,4 @@
 $ apt-get install qemu-kvm libvirt-bin virt-manager bridge-utils
 
 #kvmctl
+#show kvm
