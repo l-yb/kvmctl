@@ -1,0 +1,140 @@
+#!/bin/bash
+#This script is to operate the virual machine,It works on command "virsh".
+
+# Main area
+# If I need root privileges to run, then use sudo to call myself
+if [[ "$EUID" -gt "0" ]] ; then
+  sudo $0 "$@"
+  exit
+fi
+
+#[ gloabl variables ]
+SCRIPT_NAME=$(which "$0" 2> /dev/null)
+SCRIPT_PATH=$(if [ ${SCRIPT_NAME} ];then sed 's/\/[^/]*$//g' <<< "${SCRIPT_NAME}";else cd $(dirname $0);pwd;fi)
+LOG_TIME=$(date +%Y-%m-%d" "%H:%M:%S)
+ACTION_FILE=${SCRIPT_PATH}/config/action_list.txt
+MOUDLE_LIST="$(ls ${SCRIPT_PATH}/moudle/*)"
+FUNCTION_FILE="${SCRIPT_PATH}/moudle/function-moudle"
+REMOTE_LIST="$(sed -n "/<remote_host>/,/<\/remote_host>/p" "${ACTION_FILE}")"
+
+if [ ! -f "${FUNCTION_FILE}" ];then
+   echo "The file "${FUNCTION_FILE}" isn't exists, please check it and try again!"
+   exit 1
+elif [ ! -f "${ACTION_FILE}" ];then
+   echo "The file "${ACTION_FILE}" isn't exists, please check it and try again!"
+   exit 1
+fi
+
+#[ import moudle ]
+while read moudle;do
+source ${moudle}
+done <<< "${MOUDLE_LIST}"
+
+# [ Determining the host and variable ]
+DEFAULT_IFACE=eth0
+DEFAULT_IP=
+if [ ! ${DEFAULT_IP} ];then
+DEFAULT_IP=$(ifconfig ${DEFAULT_IFACE} | grep -oP "(?<=addr:)[^ ]*(?= *Bcast)")
+fi
+
+#[ option variables ]
+OPT_FIRST="$1"
+if [ "${OPT_FIRST}x" == "--connectx" ];then
+   REMOTE_HOST="$2"
+   if [ ! "${REMOTE_HOST}" ] || [ ! "$(grep -x "${REMOTE_HOST}" <<< "${REMOTE_LIST}")" ];then
+       echo "Unknow host "${REMOTE_HOST}" ! `get_color "Please specify a remote host." CYANBLUE`"
+       kvmctl_usage
+       exit 1
+   fi
+   OPT_ONE="$3" 
+   OPT_TWO="$4" 
+   TYPE="$5"
+   SIZE="$6"
+   QEMU_COM=' -c qemu+ssh://root@'${2}'/system'
+   SSH_COM='ssh root@'${2}''
+   if [ "${DEFAULT_IP}x" == "${2}x" ];then
+     QEMU_COM=
+     SSH_COM=
+   fi
+else
+   QEMU_COM= 
+   SSH_COM=
+   OPT_ONE="$1"
+   OPT_TWO="$2"
+   TYPE="$3"
+   SIZE="$4"
+fi
+
+DOMAIN_LIST="$(virsh ${QEMU_COM} list --all | awk '{print $2}'| sed -e '1,2d' -e '$s/^/--connect/')"
+ACTION_LIST="$(sed -n '/<actions>/,/<\/actions>/p' ${ACTION_FILE} | sed -e '1d' -e '$d')"
+TYPE_LIST="$(sed -n '/<type>/,/<\/type>/p' ${ACTION_FILE} | sed -e '1d' -e '$d')"
+XML_DIR=/etc/libvirt/qemu
+
+DOMAIN=$(if [ ${OPT_ONE} ];then grep -x "${OPT_ONE##"--"}" <<< "${DOMAIN_LIST}";else echo NULL;fi) 
+ACTION=$(if [ ${OPT_TWO} ];then grep -x "${OPT_TWO##"--"}" <<< "${ACTION_LIST}";else echo NULL;fi) 
+XML_BAK="${SCRIPT_PATH}/backup/domain_xml/${DOMAIN}"
+
+kvmctl_zero(){
+virsh ${QEMU_COM} list --all
+}
+
+kvmctl_one(){
+local dominfo=${SCRIPT_PATH}/tmp/"${DOMAIN}"info.txt
+local domain_used="$(virsh ${QEMU_COM} dumpxml "${DOMAIN}" | awk -F [\<\>] '$2 ~/currentMemory.*/{print $3}')"
+    virsh ${QEMU_COM} dominfo "${DOMAIN}" | sed -r '/Used memory/s/ 0 / '${domain_used}' /' > ${dominfo}
+    virsh ${QEMU_COM} dumpxml "${DOMAIN}" | grep  vnet* | awk -F"'" '{print $2}' | while read net; do awk '$2 ~/'${net}'/{printf("%s address\t%s\n"),$2,$1}' ${SCRIPT_PATH}/config/ip_list.txt;done >> ${dominfo}
+    virsh ${QEMU_COM} dominfo "${DOMAIN}" | sed -r '/Used memory/s/ 0 / '${domain_used}' /' | awk '$2 ~/memory:/{a=$3;getline;b=$3};END{print "memory setup\t" b/a*100"%"}'  >> ${dominfo}
+    cat ${dominfo}
+    [ "${dominfo}" ] && rm -rf ${dominfo}
+}
+
+kvmctl_four(){
+    ${ACTION} ${DOMAIN} ${TYPE} ${SIZE}
+}
+
+#[ determine options ]
+if [ ! "${DOMAIN}" ] || [ ! "${ACTION}" ];then #|| [ ! "${TYPE}" ];then
+    kvmctl_usage 
+    if [ ! "$(grep help <<< "$1 $2 $3 $4")" ];then
+    if [ ! "${DOMAIN}" ];then
+       echo  "Error: Domain not found: no domain with matching name :`get_color ${OPT_ONE} RED` "
+       exit 1
+    elif [ ! ${ACTION} ];then
+       echo  "Error: command_string not found : `get_color ${OPT_TWO} RED` "
+       exit 2
+    fi
+    else
+    exit 0
+    fi
+fi
+if [ "${OPT_FIRST}x" == "--connectx" ];then
+    case $# in
+       0|1|2)
+       kvmctl_zero
+       ;;
+       3)
+       kvmctl_one
+       ;;
+       4|5|6|7|8 )
+       kvmctl_four
+       ;;
+       *)
+       kvmctl_usage
+       ;;
+    esac
+else
+    case $# in
+        0)
+        kvmctl_zero
+        ;;
+        1)
+        kvmctl_one
+        ;;
+        2|3|4|5|6 )
+        kvmctl_four
+        ;;
+        *)
+        kvmctl_usage
+        ;;
+    esac
+fi
